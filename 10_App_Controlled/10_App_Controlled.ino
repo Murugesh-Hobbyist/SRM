@@ -1,11 +1,12 @@
 #include <WiFi.h>
 #include <WebServer.h>
 
-// -------- WIFI CONFIG --------
-const char* ssid = "1+";
+// -------- WIFI AP --------
+const char* ssid = "Murugesh_Car";
 const char* password = "12344321";
 
 WebServer server(80);
+
 // -------- Motor Pins --------
 #define ENA 4
 #define IN1 1
@@ -15,17 +16,31 @@ WebServer server(80);
 #define IN3 9
 #define IN4 10
 
-// -------- Variables --------
-int speedPWM_A = 0;
-int speedPWM_B = 0;
+unsigned long lastCommandTime = 0;
 
-// -------- Motor Control --------
+// -------- MOTOR CONTROL --------
+void stopMotor() {
+  digitalWrite(IN1, LOW);
+  digitalWrite(IN2, LOW);
+  digitalWrite(IN3, LOW);
+  digitalWrite(IN4, LOW);
+
+  analogWrite(ENA, 0);
+  analogWrite(ENB, 0);
+}
+
 void setMotor(int leftSpeed, int rightSpeed) {
+
+  if (leftSpeed == 0 && rightSpeed == 0) {
+    stopMotor();
+    return;
+  }
+
   // LEFT MOTOR
   if (leftSpeed > 0) {
     digitalWrite(IN1, HIGH);
     digitalWrite(IN2, LOW);
-  } else if (leftSpeed < 0) {
+  } else {
     digitalWrite(IN1, LOW);
     digitalWrite(IN2, HIGH);
     leftSpeed = -leftSpeed;
@@ -35,20 +50,17 @@ void setMotor(int leftSpeed, int rightSpeed) {
   if (rightSpeed > 0) {
     digitalWrite(IN3, LOW);
     digitalWrite(IN4, HIGH);
-  } else if (rightSpeed < 0) {
+  } else {
     digitalWrite(IN3, HIGH);
     digitalWrite(IN4, LOW);
     rightSpeed = -rightSpeed;
   }
 
-  leftSpeed = constrain(leftSpeed, 0, 255);
-  rightSpeed = constrain(rightSpeed, 0, 255);
-
-  analogWrite(ENA, leftSpeed);
-  analogWrite(ENB, rightSpeed);
+  analogWrite(ENA, constrain(leftSpeed, 0, 255));
+  analogWrite(ENB, constrain(rightSpeed, 0, 255));
 }
 
-// -------- HTML UI --------
+// -------- WEB PAGE --------
 String webpage = R"====(
 <!DOCTYPE html>
 <html>
@@ -56,22 +68,29 @@ String webpage = R"====(
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
 body { background:#111; color:white; text-align:center; }
+
 .joystick {
-  width:150px; height:150px;
+  width:160px; height:160px;
   background:#333; border-radius:50%;
-  position:relative; margin:20px auto;
+  position:relative; margin:20px;
 }
+
 .stick {
   width:50px; height:50px;
   background:red; border-radius:50%;
-  position:absolute; top:50px; left:50px;
+  position:absolute;
+  left:55px; top:55px;
 }
-.container { display:flex; justify-content:space-around; }
+
+.container {
+  display:flex;
+  justify-content:space-around;
+}
 </style>
 </head>
 
 <body>
-<h2>ESP32 Joystick Control</h2>
+<h2>Murugesh Car Controller</h2>
 
 <div class="container">
   <div>
@@ -89,77 +108,92 @@ body { background:#111; color:white; text-align:center; }
   </div>
 </div>
 
-<p id="status">PWM: 0 , 0</p>
-
 <script>
 
 let yVal = 0;
 let xVal = 0;
 
-function setupJoystick(joyId, stickId, isY) {
-  let joy = document.getElementById(joyId);
-  let stick = document.getElementById(stickId);
+function clamp(x, y) {
+  let d = Math.sqrt(x*x + y*y);
+  if (d > 50) {
+    x = x * 50 / d;
+    y = y * 50 / d;
+  }
+  return {x, y};
+}
 
-  joy.addEventListener("touchmove", function(e) {
-    e.preventDefault();
+function send(l, r) {
+  fetch(`/move?l=${l}&r=${r}`).catch(()=>{});
+}
 
+function STOP() {
+  fetch("/stop").catch(()=>{});
+}
+
+function setup(joyId, stickId, isY) {
+
+  const joy = document.getElementById(joyId);
+  const stick = document.getElementById(stickId);
+
+  function move(e) {
     let rect = joy.getBoundingClientRect();
-    let x = e.touches[0].clientX - rect.left - 75;
-    let y = e.touches[0].clientY - rect.top - 75;
+    let t = e.touches ? e.touches[0] : e;
 
-    x = Math.max(-50, Math.min(50, x));
-    y = Math.max(-50, Math.min(50, y));
+    let x = t.clientX - rect.left - 80;
+    let y = t.clientY - rect.top - 80;
 
-    stick.style.left = (x + 50) + "px";
-    stick.style.top = (y + 50) + "px";
+    let p = clamp(x, y);
 
-    if (isY) {
-      yVal = -y;
-    } else {
-      xVal = x;
-    }
+    stick.style.left = (p.x + 55) + "px";
+    stick.style.top  = (p.y + 55) + "px";
 
-    sendCommand();
-  });
+    if (isY) yVal = -p.y;
+    else xVal = p.x;
 
-  joy.addEventListener("touchend", function() {
-    stick.style.left = "50px";
-    stick.style.top = "50px";
+    let L = yVal + xVal;
+    let R = yVal - xVal;
 
-    if (isY) yVal = 0;
-    else xVal = 0;
+    L = Math.max(-100, Math.min(100, L));
+    R = Math.max(-100, Math.min(100, R));
 
-    sendCommand();
-  });
+    send(L, R);
+  }
+
+  function release() {
+    stick.style.left = "55px";
+    stick.style.top = "55px";
+
+    yVal = 0;
+    xVal = 0;
+
+    STOP();
+  }
+
+  joy.addEventListener("touchmove", move);
+  joy.addEventListener("touchend", release);
+  joy.addEventListener("touchcancel", release);
+
+  joy.addEventListener("mousemove", move);
+  joy.addEventListener("mouseup", release);
+  joy.addEventListener("mouseleave", release);
 }
 
-function sendCommand() {
-  let left = yVal + xVal;
-  let right = yVal - xVal;
-
-  left = Math.max(-100, Math.min(100, left));
-  right = Math.max(-100, Math.min(100, right));
-
-  document.getElementById("status").innerHTML =
-    "PWM: " + left + " , " + right;
-
-  fetch(`/move?l=${left}&r=${right}`);
-}
-
-setupJoystick("joyY", "stickY", true);
-setupJoystick("joyX", "stickX", false);
+setup("joyY","stickY",true);
+setup("joyX","stickX",false);
 
 </script>
 </body>
 </html>
 )====";
 
-// -------- HTTP Handlers --------
+// -------- HTTP --------
 void handleRoot() {
   server.send(200, "text/html", webpage);
 }
 
 void handleMove() {
+  lastCommandTime = millis();
+
   int l = server.arg("l").toInt();
   int r = server.arg("r").toInt();
 
@@ -171,7 +205,12 @@ void handleMove() {
   server.send(200, "text/plain", "OK");
 }
 
-// -------- Setup --------
+void handleStop() {
+  stopMotor();
+  server.send(200, "text/plain", "STOP");
+}
+
+// -------- SETUP --------
 void setup() {
   Serial.begin(115200);
 
@@ -183,17 +222,34 @@ void setup() {
   pinMode(IN3, OUTPUT);
   pinMode(IN4, OUTPUT);
 
+  // Start AP
   WiFi.softAP(ssid, password);
-  Serial.println("AP Started");
-  Serial.println(WiFi.softAPIP());
+
+  IPAddress IP = WiFi.softAPIP();
+
+  Serial.println("\n==============================");
+  Serial.println("Murugesh Car WiFi Started");
+  Serial.print("SSID: ");
+  Serial.println(ssid);
+  Serial.print("Password: ");
+  Serial.println(password);
+  Serial.print("Open URL: http://");
+  Serial.println(IP);
+  Serial.println("==============================");
 
   server.on("/", handleRoot);
   server.on("/move", handleMove);
+  server.on("/stop", handleStop);
 
   server.begin();
 }
 
-// -------- Loop --------
+// -------- LOOP --------
 void loop() {
   server.handleClient();
+
+  // FAILSAFE STOP
+  if (millis() - lastCommandTime > 100) {
+    stopMotor();
+  }
 }
